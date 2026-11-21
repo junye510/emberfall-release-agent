@@ -11,6 +11,7 @@ import sys
 
 SUPPORTED_PROVIDERS = (
     "echo",
+    "deepseek",
     "openai",
     "anthropic",
     "claude",
@@ -20,6 +21,14 @@ SUPPORTED_PROVIDERS = (
     "ollama",
     "cortensor",
 )
+
+# `openminion setup --provider deepseek` writes an OpenAI-compatible profile.
+# `config init --provider` does not accept this preset.
+DEEPSEEK_PROVIDER = "deepseek"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
+DEEPSEEK_ALT_MODEL = "deepseek-v4-pro"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 
 # config init stores Claude settings on the anthropic block.
 _PROVIDER_BLOCK = {
@@ -100,6 +109,8 @@ def resolve_settings(
     if selected_approval not in {"ask", "yes", "no"}:
         raise ValueError("Approval must be ask, yes, or no.")
     warnings: list[str] = []
+    if selected == DEEPSEEK_PROVIDER and not selected_model:
+        selected_model = DEEPSEEK_DEFAULT_MODEL
     if selected == "echo" and selected_model:
         warnings.append(
             "OPENMINION_MODEL is ignored for the echo provider. "
@@ -118,13 +129,15 @@ def resolve_settings(
 
 
 def prepare_runtime_home(home: Path, settings: RuntimeSettings) -> Path:
-    """Create agents.json with ``openminion config init`` and apply model overrides."""
+    """Create agents.json for one isolated OpenMinion home."""
 
     home.mkdir(parents=True, exist_ok=True)
     data_root = home / ".openminion"
     env = os.environ.copy()
     env["OPENMINION_HOME"] = str(home)
     env["OPENMINION_DATA_ROOT"] = str(data_root)
+    if settings.provider == DEEPSEEK_PROVIDER:
+        return _prepare_deepseek_home(home, data_root, env, settings)
     result = subprocess.run(
         [
             sys.executable,
@@ -148,6 +161,67 @@ def prepare_runtime_home(home: Path, settings: RuntimeSettings) -> Path:
     config_path = data_root / "agents.json"
     _apply_provider_overrides(config_path, settings)
     return config_path
+
+
+def _prepare_deepseek_home(
+    home: Path,
+    data_root: Path,
+    env: dict[str, str],
+    settings: RuntimeSettings,
+) -> Path:
+    """Write the DeepSeek preset with ``openminion setup``.
+
+    Non-interactive setup refuses to save the preset unless ``DEEPSEEK_API_KEY``
+    is present. When the parent process has no key, the child setup gets a
+    placeholder so the profile can still be written. The placeholder is not
+    stored: ``api_key`` stays empty and ``api_key_env`` stays ``DEEPSEEK_API_KEY``.
+    The following ``Agent.run`` then raises ``ProviderError`` from the real env.
+    """
+
+    if not env.get(DEEPSEEK_API_KEY_ENV, "").strip():
+        env[DEEPSEEK_API_KEY_ENV] = "unset"
+    command = [
+        sys.executable,
+        "-m",
+        "openminion",
+        "setup",
+        "--provider",
+        DEEPSEEK_PROVIDER,
+        "--model",
+        settings.model or DEEPSEEK_DEFAULT_MODEL,
+        "--no-chat",
+    ]
+    if settings.base_url:
+        command.extend(["--base-url", settings.base_url])
+    result = subprocess.run(
+        command,
+        cwd=str(home),
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "deepseek setup failed").strip()
+        raise RuntimeError(detail)
+    config_path = data_root / "agents.json"
+    _scrub_placeholder_key(config_path)
+    return config_path
+
+
+def _scrub_placeholder_key(config_path: Path) -> None:
+    """Drop a setup placeholder if one was persisted. Keys stay in the environment."""
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    changed = False
+    providers = payload.get("providers")
+    if isinstance(providers, dict):
+        block = providers.get("openai")
+        if isinstance(block, dict) and block.get("api_key") == "unset":
+            block["api_key"] = ""
+            changed = True
+    if changed:
+        config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _apply_provider_overrides(config_path: Path, settings: RuntimeSettings) -> None:

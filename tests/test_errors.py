@@ -1,12 +1,20 @@
 """ProviderError, TurnTimeoutError, and structured-output rejection."""
 
+import json
 from pathlib import Path
 
 from openminion import Agent, AgentOutputValidationError, ProviderError, TurnTimeoutError
 
 from release_agent.cli import main
 from release_agent.models import ReleasePacket
-from release_agent.runtime_config import prepare_runtime_home, resolve_settings
+from release_agent.runtime_config import (
+    DEEPSEEK_ALT_MODEL,
+    DEEPSEEK_API_KEY_ENV,
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_DEFAULT_MODEL,
+    prepare_runtime_home,
+    resolve_settings,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / "examples" / "emberfall" / "CHANGELOG.md"
@@ -42,6 +50,58 @@ def test_missing_openai_key_is_provider_error(tmp_path: Path, monkeypatch, capsy
     assert "provider failed: PROVIDER_ERROR:" in captured.err
     assert "OPENAI_API_KEY" in captured.err
     assert not (tmp_path / "out" / "RELEASE_NOTES.md").exists()
+
+
+def test_deepseek_is_the_real_model_preset(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.delenv(DEEPSEEK_API_KEY_ENV, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-be-used")
+    home = tmp_path / "home"
+    code = main(
+        [
+            "--changelog",
+            str(CHANGELOG),
+            "--bugs",
+            str(BUGS),
+            "--out",
+            str(tmp_path / "out"),
+            "--approval",
+            "yes",
+            "--provider",
+            "deepseek",
+            "--home",
+            str(home),
+            "--session-id",
+            "deepseek-missing-key",
+            "--timeout",
+            "30",
+            "--env-file",
+            str(tmp_path / "missing.env"),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 3, captured.out + captured.err
+    assert "provider failed: PROVIDER_ERROR:" in captured.err
+    assert DEEPSEEK_API_KEY_ENV in captured.err
+    assert not (tmp_path / "out" / "RELEASE_NOTES.md").exists()
+
+    config = json.loads((home / ".openminion" / "agents.json").read_text(encoding="utf-8"))
+    openai = config["providers"]["openai"]
+    assert openai["model"] == DEEPSEEK_DEFAULT_MODEL
+    assert openai["base_url"] == DEEPSEEK_BASE_URL
+    assert openai["api_key_env"] == DEEPSEEK_API_KEY_ENV
+    assert not str(openai.get("api_key") or "").strip()
+    assert config["agents"]["openminion"]["provider"] == "openai"
+    connection = config["agents"]["openminion"]["model_connections"]["deepseek"]
+    assert connection["provider"] == "openai"
+    assert DEEPSEEK_DEFAULT_MODEL in connection["models"]
+    assert "unset" not in json.dumps(config)
+
+    settings = resolve_settings(provider="deepseek", model=DEEPSEEK_ALT_MODEL, approval="yes")
+    alt_home = tmp_path / "home-pro"
+    prepare_runtime_home(alt_home, settings)
+    alt = json.loads((alt_home / ".openminion" / "agents.json").read_text(encoding="utf-8"))
+    assert alt["providers"]["openai"]["model"] == DEEPSEEK_ALT_MODEL
+    assert alt["providers"]["openai"]["api_key_env"] == DEEPSEEK_API_KEY_ENV
 
 
 def test_turn_timeout_and_invalid_structured_output(tmp_path: Path):

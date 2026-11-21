@@ -1,6 +1,6 @@
 """Offline turn planner and echo completer.
 
-OpenMinion 0.1.22's echo provider repeats the last user text and never selects
+OpenMinion 0.1.24's echo provider repeats the last user text and never selects
 a tool. The public config also rejects the in-package ``stub`` provider, which
 does understand ``tool:<name> {json}`` directives. For a credential-free run
 this module plans the next tool call and patches ``EchoProvider.complete``
@@ -182,7 +182,9 @@ def _attach_thread_task_update(
         for message in messages
         if getattr(message, "role", "") == "system"
     )
-    if "include task_update" not in system_text:
+    # 0.1.22 said "include task_update". 0.1.24 says
+    # "include exactly one task_update", so match the field name.
+    if "task_update" not in system_text:
         return plan
     quote = "Write the release files with these exact bytes."
     if quote not in user_text:
