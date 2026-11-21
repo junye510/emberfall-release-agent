@@ -23,14 +23,18 @@ Check the SDK import the quickstart names:
 python -c "from openminion import Agent, ProviderError, TurnTimeoutError, tool; print('SDK 0.1.24 ready')"
 ```
 
-## Run with DeepSeek
+## Run with Z.ai
 
-DeepSeek is the real-model provider for this project. The CLI runs `openminion setup --provider deepseek --model <model> --no-chat` inside `--home` and reads the key only from `DEEPSEEK_API_KEY`. The preset is OpenAI-compatible at `https://api.deepseek.com`. The default model is `deepseek-v4-flash`. `deepseek-v4-pro` is the alternate.
+Z.ai / Zhipu is the real-model provider for this project. The free model is `glm-4.7-flash` (function calling and structured output). The OpenMinion `zai` preset's own default is the paid `glm-5.2`, so the CLI always passes `glm-4.7-flash` unless `OPENMINION_MODEL` is set. The key is read only from `ZAI_API_KEY`.
+
+International keys from z.ai use the preset endpoint `https://api.z.ai/api/paas/v4/`. Keys issued on [bigmodel.cn](https://open.bigmodel.cn/) need that site's OpenAI-compatible endpoint. Set `ZAI_BASE_URL` or `OPENMINION_BASE_URL` (the general variable wins when both are set). `--base-url` overrides both.
 
 ```bash
-export OPENMINION_PROVIDER=deepseek
-export OPENMINION_MODEL=deepseek-v4-flash
-export DEEPSEEK_API_KEY=sk-...
+export OPENMINION_PROVIDER=zai
+export OPENMINION_MODEL=glm-4.7-flash
+export ZAI_API_KEY=...
+# Keys from bigmodel.cn (China). Omit this line for a z.ai international key.
+export ZAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
 python -m release_agent \
   --changelog examples/emberfall/CHANGELOG.md \
   --bugs examples/emberfall/playtest-log.md \
@@ -38,20 +42,26 @@ python -m release_agent \
   --approval ask
 ```
 
-The same preset from the OpenMinion CLI, which is what we checked against 0.1.24:
+The same preset from the OpenMinion CLI:
 
 ```bash
 export OPENMINION_HOME=$PWD
 export OPENMINION_DATA_ROOT=$OPENMINION_HOME/.openminion
-openminion setup --provider deepseek --model deepseek-v4-flash --no-chat
+export ZAI_API_KEY=...
+openminion setup --provider zai --model glm-4.7-flash --no-chat
+# bigmodel.cn keys:
+# openminion setup --provider zai --model glm-4.7-flash \
+#   --base-url https://open.bigmodel.cn/api/paas/v4/ --no-chat
 openminion doctor --check-turn
 ```
 
-`$PWD/.openminion/` is gitignored. An account with no balance fails the turn with `ProviderError` `402` `insufficient_balance_error`. That is recorded under [What We Learned](#what-we-learned).
+`$PWD/.openminion/` is gitignored.
+
+DeepSeek remains available (`OPENMINION_PROVIDER=deepseek`, model `deepseek-v4-flash`, key `DEEPSEEK_API_KEY`). An account with no balance fails that turn with `ProviderError` `402` `insufficient_balance_error`. That is why Z.ai is the recommended path, and it is recorded under [What We Learned](#what-we-learned).
 
 ## Run the offline demo
 
-No API key is required. If `OPENMINION_PROVIDER` is unset, the CLI uses OpenMinion's echo provider. Pass `--provider echo` when a `.env` file already selects DeepSeek. Echo does not call a model, so this project installs an in-process completer on `EchoProvider.complete` for the release turn only. The completer decides the next tool call. The SDK still executes the tools, keeps the session, validates the Pydantic packet, and asks the approval callback before the write.
+No API key is required. If `OPENMINION_PROVIDER` is unset, the CLI uses OpenMinion's echo provider. Pass `--provider echo` when a `.env` file already selects Z.ai. Echo does not call a model, so this project installs an in-process completer on `EchoProvider.complete` for the release turn only. The completer decides the next tool call. The SDK still executes the tools, keeps the session, validates the Pydantic packet, and asks the approval callback before the write.
 
 Unattended write (the path the tests use):
 
@@ -98,9 +108,9 @@ Useful flags: `--draft-only`, `--session-id`, `--timeout`, `--home` (isolated Op
 pytest
 ```
 
-The suite covers the changelog and bug parsers, the read and write sandbox, the offline planner, a full echo run that approves the write, a full echo run that denies it, `AgentOutputValidationError` on a non-JSON reply, `TurnTimeoutError` from `timeout_seconds`, `ProviderError` when `openai` is selected without `OPENAI_API_KEY`, and the DeepSeek preset (`deepseek-v4-flash` by default, `deepseek-v4-pro` when requested) with `ProviderError` when `DEEPSEEK_API_KEY` is missing.
+The suite covers the changelog and bug parsers, the read and write sandbox, the offline planner, a full echo run that approves the write, a full echo run that denies it, `AgentOutputValidationError` on a non-JSON reply, `TurnTimeoutError` from `timeout_seconds`, `ProviderError` when `openai` is selected without `OPENAI_API_KEY`, the Z.ai preset (`glm-4.7-flash`, not the paid `glm-5.2`, including the bigmodel.cn base URL), and the DeepSeek preset (`deepseek-v4-flash` by default, `deepseek-v4-pro` when requested) with `ProviderError` when the matching API key is missing.
 
-Last run in this workspace: **17 passed** on `openminion==0.1.24`.
+Last run in this workspace: **18 passed** on `openminion==0.1.24`.
 
 ## Switch to a real model
 
@@ -111,41 +121,50 @@ Echo stays the default until you change `OPENMINION_PROVIDER`. The offline compl
 `OPENMINION_MODEL` is ignored for echo. OpenMinion raises `ConfigError: Runtime model overrides are not supported for the echo provider` if you pass a model override into an echo run. For every other provider the value is written into that provider's `model` field in the generated `agents.json`.
 
 ```bash
-# DeepSeek (recommended)
-export OPENMINION_PROVIDER=deepseek
-export OPENMINION_MODEL=deepseek-v4-flash
-export DEEPSEEK_API_KEY=sk-...
+# Z.ai / Zhipu (recommended). glm-4.7-flash is the free model.
+# The preset default glm-5.2 is paid and is not used unless you set it.
+export OPENMINION_PROVIDER=zai
+export OPENMINION_MODEL=glm-4.7-flash
+export ZAI_API_KEY=...
+# International keys use https://api.z.ai/api/paas/v4/ (the preset default).
+# bigmodel.cn keys:
+export ZAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
+
+# DeepSeek (alternative; needs account balance)
+# export OPENMINION_PROVIDER=deepseek
+# export OPENMINION_MODEL=deepseek-v4-flash
+# export DEEPSEEK_API_KEY=sk-...
 
 # OpenAI
-export OPENMINION_PROVIDER=openai
-export OPENMINION_MODEL=gpt-4.1-mini
-export OPENAI_API_KEY=sk-...
+# export OPENMINION_PROVIDER=openai
+# export OPENMINION_MODEL=gpt-4.1-mini
+# export OPENAI_API_KEY=sk-...
 
 # Anthropic
-export OPENMINION_PROVIDER=anthropic
-export OPENMINION_MODEL=claude-sonnet-5
-export ANTHROPIC_API_KEY=...
+# export OPENMINION_PROVIDER=anthropic
+# export OPENMINION_MODEL=claude-sonnet-5
+# export ANTHROPIC_API_KEY=...
 
 # OpenRouter
-export OPENMINION_PROVIDER=openrouter
-export OPENMINION_MODEL=openai/gpt-4.1-mini
-export OPENROUTER_API_KEY=...
+# export OPENMINION_PROVIDER=openrouter
+# export OPENMINION_MODEL=openai/gpt-4.1-mini
+# export OPENROUTER_API_KEY=...
 
 # Ollama on this machine
-export OPENMINION_PROVIDER=ollama
-export OPENMINION_MODEL=llama3.1
-export OPENMINION_BASE_URL=http://127.0.0.1:11434
+# export OPENMINION_PROVIDER=ollama
+# export OPENMINION_MODEL=llama3.1
+# export OPENMINION_BASE_URL=http://127.0.0.1:11434
 
 # Cortensor router (experimental hosted path)
-export OPENMINION_PROVIDER=cortensor
-export OPENMINION_MODEL=gpt-oss-20b
-export OPENMINION_BASE_URL=http://127.0.0.1:8080/api/v2/completions
-export CORTENSOR_API_KEY=...
+# export OPENMINION_PROVIDER=cortensor
+# export OPENMINION_MODEL=gpt-oss-20b
+# export OPENMINION_BASE_URL=http://127.0.0.1:8080/api/v2/completions
+# export CORTENSOR_API_KEY=...
 ```
 
 Then run the same command. Drop `--approval yes` the first time so you can see the approval prompt. The draft instructions tell the model to call `read_release_file` twice, call `compile_release_packet`, and return only that JSON object. The publish instructions tell it to call `write_release_files` once with the exact bytes. `forced_tools` on the draft turn limits the offered tools to the two read/compile tools.
 
-`config init --provider` accepts `echo`, `openai`, `anthropic`, `claude`, `openrouter`, `cerebras`, `groq`, `ollama`, and `cortensor`. DeepSeek is not in that list. 0.1.24 configures it with `openminion setup --provider deepseek`, which saves an OpenAI-compatible profile (`provider: openai`, `base_url: https://api.deepseek.com`, `api_key_env: DEEPSEEK_API_KEY`, model `deepseek-v4-flash` or `deepseek-v4-pro`). The release CLI does that setup itself when `--provider deepseek` or `OPENMINION_PROVIDER=deepseek` is set.
+`config init --provider` accepts `echo`, `openai`, `anthropic`, `claude`, `openrouter`, `cerebras`, `groq`, `ollama`, and `cortensor`. Z.ai and DeepSeek are not in that list. 0.1.24 configures them with `openminion setup`. Z.ai saves an OpenAI-compatible profile (`provider: openai`, default base URL `https://api.z.ai/api/paas/v4/`, `api_key_env: ZAI_API_KEY`) and this CLI passes model `glm-4.7-flash`. DeepSeek saves `base_url: https://api.deepseek.com`, `api_key_env: DEEPSEEK_API_KEY`, and model `deepseek-v4-flash` or `deepseek-v4-pro`. The release CLI runs that setup itself for `--provider zai` and `--provider deepseek`.
 
 ## Input format
 
@@ -166,7 +185,7 @@ The playtest log is one `## BUG-123` block per open bug, with `title`, `severity
 
 One process, two turns, one shared `APIRuntime`.
 
-1. `prepare_runtime_home` writes an isolated config under `--home`. Echo and the other `config init` providers use `python -m openminion config init --provider <name> --force`, then patch `model` and `base_url` when those were set. DeepSeek uses `python -m openminion setup --provider deepseek --model <model> --no-chat`, which is the 0.1.24 preset (`deepseek-v4-flash` by default, base URL `https://api.deepseek.com`, key env `DEEPSEEK_API_KEY`). The generated profile uses `default_channel: console`, which the default authenticity policy trusts.
+1. `prepare_runtime_home` writes an isolated config under `--home`. Echo and the other `config init` providers use `python -m openminion config init --provider <name> --force`, then patch `model` and `base_url` when those were set. Z.ai and DeepSeek use `python -m openminion setup --provider <preset> --model <model> --no-chat`. Z.ai's model is `glm-4.7-flash` and its base URL is `https://api.z.ai/api/paas/v4/` unless `ZAI_BASE_URL`, `OPENMINION_BASE_URL`, or `--base-url` points at `https://open.bigmodel.cn/api/paas/v4/` for a bigmodel.cn key. The generated profile uses `default_channel: console`, which the default authenticity policy trusts.
 2. The draft `Agent` is constructed with `instructions`, `output_type=ReleasePacket`, `tools=[read_release_file, compile_release_packet]`, `forced_tools` for those two names, and `session_id`.
 3. `agent.run(draft_message, timeout_seconds=...)` reads both files through the tools and returns `result.output` as a validated `ReleasePacket`. `result.text` is the raw reply, which echo prefixes with the profile name (`openminion: `). The SDK's object extractor still accepts the JSON.
 4. The CLI prints the release notes. Nothing is on disk yet.
@@ -191,11 +210,12 @@ Tested in this repo, on `openminion==0.1.24` (first brought up on 0.1.22, then r
 | `thread_id` | Publish run passes `draft.thread_id` | Both turns reported the same id (`emberfall-0.4.0:<uuid>`). A completed turn still has a `thread_id`; it does not mean the turn is waiting. |
 | `output_type` | `ReleasePacket` on the draft turn | `result.output` is the validated model. The sample packet matches the local parser byte for byte after approval. |
 | `approval_callback` | Approve and deny | Allow writes the files. Deny returns `Confirmation denied. The action was not run.` and writes nothing. |
-| `ProviderError` | OpenAI with no `OPENAI_API_KEY`, and DeepSeek with no `DEEPSEEK_API_KEY` | `code=PROVIDER_ERROR`. The message names the env var the profile uses. Raised before a hosted call. |
+| `ProviderError` | OpenAI, Z.ai, or DeepSeek with the matching API key unset | `code=PROVIDER_ERROR`. The message names `OPENAI_API_KEY`, `ZAI_API_KEY`, or `DEEPSEEK_API_KEY`. Raised before a hosted call. |
 | `TurnTimeoutError` | `timeout_seconds=0.05` on a warm runtime, and `--timeout 0.05` on the CLI | Raises `Turn execution timed out after 0.05 seconds.` |
 | `AgentOutputValidationError` | Echo reply `this is not json` with `output_type=ReleasePacket` | `raw_text` keeps the reply. The CLI prints it and exits 5. |
 | Echo provider and config | `openminion config init --provider echo` | Enough to boot the runtime with no secrets. Not enough to choose tools. |
-| DeepSeek preset | `openminion setup --provider deepseek --model deepseek-v4-flash --no-chat` | Writes `provider: openai`, `base_url: https://api.deepseek.com`, `api_key_env: DEEPSEEK_API_KEY`, and a `deepseek` model connection. `config init --provider` does not list `deepseek`. A live turn was not run here because this workspace has no key. |
+| Z.ai preset | `openminion setup --provider zai --model glm-4.7-flash --no-chat` | Writes `provider: openai`, base URL `https://api.z.ai/api/paas/v4/` unless overridden, `api_key_env: ZAI_API_KEY`, and a `zai` connection whose model is `glm-4.7-flash` rather than the paid preset default `glm-5.2`. `ZAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4/` selects the China endpoint. |
+| DeepSeek preset | `openminion setup --provider deepseek --model deepseek-v4-flash --no-chat` | Writes `provider: openai`, `base_url: https://api.deepseek.com`, `api_key_env: DEEPSEEK_API_KEY`, and a `deepseek` model connection. Kept as the documented alternative. |
 | Run metadata | `result.metadata` | Reports `provider=echo` and `model=brain-orchestrator`, plus `llm_calls_count`. One one-tool turn made 8 provider calls. |
 
 Not exercised here: handoffs, subagents, memory bundles, skills, schedules, `run_stream`, MCP, and a live Cortensor Portal or router call. Portal access was not available in this workspace.
@@ -278,17 +298,19 @@ A single `read_note` turn reported `llm_calls_count` 8 and `llm_call_counts_by_p
 
 `Agent.run(approval_callback=)` takes `(tool_name, args, approval_id) -> bool`. The runtime invokes an internal wrapper with a fourth `policy_facts` argument, and `Agent` drops it before calling the application. `RuntimeTurnHandle.resolve_approval` instead wants the strings `allow_once` or `deny`. We used the boolean callback. It is the one that fires for a `@tool` write under the default policy.
 
-**9. DeepSeek with no account balance returns ProviderError 402.**
+**9. DeepSeek with no account balance returns ProviderError 402, so the recommended model is Z.ai's free glm-4.7-flash.**
 
-DeepSeek is an OpenAI-compatible setup preset, not a `config init` provider name. A key that authenticates but has no balance does not look like a missing-key failure. The turn raises `ProviderError` with HTTP `402` and error code `insufficient_balance_error`. That was observed on another machine against `deepseek-v4-flash` at `https://api.deepseek.com` after `openminion setup --provider deepseek --model deepseek-v4-flash --no-chat`. This workspace has no `DEEPSEEK_API_KEY`, so the local check stops earlier: `ProviderError` `PROVIDER_ERROR` telling you to export `DEEPSEEK_API_KEY`, with no hosted request. Top up the DeepSeek account before treating a 402 as a bug in the agent.
+DeepSeek is an OpenAI-compatible setup preset, not a `config init` provider name. A key that authenticates but has no balance does not look like a missing-key failure. The turn raises `ProviderError` with HTTP `402` and error code `insufficient_balance_error`. That was observed on another machine against `deepseek-v4-flash` at `https://api.deepseek.com` after `openminion setup --provider deepseek --model deepseek-v4-flash --no-chat`. This workspace has no `DEEPSEEK_API_KEY`, so the local check stops earlier: `ProviderError` `PROVIDER_ERROR` telling you to export `DEEPSEEK_API_KEY`, with no hosted request.
+
+The recommended path is therefore Z.ai preset `zai` with the free model `glm-4.7-flash`. The preset's own recommended model is the paid `glm-5.2`, so leaving the model unset would select that paid id. The CLI passes `glm-4.7-flash` explicitly. Z.ai documents that model as supporting function calling and structured output. A key from z.ai uses `https://api.z.ai/api/paas/v4/`. A key from bigmodel.cn uses `https://open.bigmodel.cn/api/paas/v4/`, set with `ZAI_BASE_URL` or `OPENMINION_BASE_URL`. No `ZAI_API_KEY` is present here, so that hosted turn was not run. A missing key still raises `ProviderError` and names `ZAI_API_KEY`.
 
 **10. `config init` and `setup` do not accept the same provider ids.**
 
-`openminion config init --provider deepseek` is rejected. The working command is `openminion setup --provider deepseek --model deepseek-v4-flash --no-chat`. Non-interactive setup also refuses to write the profile unless `DEEPSEEK_API_KEY` is set (`Setup failed: Missing credential for DeepSeek`). The CLI passes a placeholder into that subprocess only when the parent environment has no key, and the saved file keeps `api_key` empty with `api_key_env` set to `DEEPSEEK_API_KEY`.
+`openminion config init --provider zai` and `--provider deepseek` are rejected. The working commands are `openminion setup --provider zai --model glm-4.7-flash --no-chat` and `openminion setup --provider deepseek --model deepseek-v4-flash --no-chat`. Non-interactive setup also refuses to write the profile unless the preset's key env var is set (`Setup failed: Missing credential for ...`). The CLI passes a placeholder into that subprocess only when the parent environment has no key, and the saved file keeps `api_key` empty with `api_key_env` set to `ZAI_API_KEY` or `DEEPSEEK_API_KEY`.
 
 ### Pending
 
-- **Real-model run.** No `DEEPSEEK_API_KEY` was available in this workspace, so DeepSeek was configured and the missing-key path was tested, but no hosted completion ran. Expect the 1200-character tool-result clip to matter: the packet JSON does not fit in a tool message, so the model should build the final JSON from the file texts it saw, not from the clipped `compile_release_packet` return value. Also expect `ProviderError` `402` `insufficient_balance_error` until the DeepSeek account has balance.
+- **Real-model run.** No `ZAI_API_KEY` or `DEEPSEEK_API_KEY` was available in this workspace, so both presets were configured and the missing-key path was tested, but no hosted completion ran. For a bigmodel.cn key, set `ZAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4/` before the first real run. Expect the 1200-character tool-result clip to matter: the packet JSON does not fit in a tool message, so the model should build the final JSON from the file texts it saw, not from the clipped `compile_release_packet` return value. DeepSeek still returns `ProviderError` `402` `insufficient_balance_error` until that account has balance.
 - **Demo video.** Not recorded. A 1–5 minute capture of `--approval ask` on the Cinder Orchard sample, including the deny path, is the missing submission piece.
 - **Cortensor Portal / router.** The `cortensor` provider id is wired through the same env switch, with the default model `gpt-oss-20b` and base URL `http://127.0.0.1:8080/api/v2/completions`. Nothing was listening, and there was no `CORTENSOR_API_KEY`, so that path was not executed.
 

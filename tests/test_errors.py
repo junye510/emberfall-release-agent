@@ -12,6 +12,12 @@ from release_agent.runtime_config import (
     DEEPSEEK_API_KEY_ENV,
     DEEPSEEK_BASE_URL,
     DEEPSEEK_DEFAULT_MODEL,
+    ZAI_API_KEY_ENV,
+    ZAI_BASE_URL,
+    ZAI_BASE_URL_ENV,
+    ZAI_CHINA_BASE_URL,
+    ZAI_DEFAULT_MODEL,
+    ZAI_PAID_PRESET_MODEL,
     prepare_runtime_home,
     resolve_settings,
 )
@@ -50,6 +56,71 @@ def test_missing_openai_key_is_provider_error(tmp_path: Path, monkeypatch, capsy
     assert "provider failed: PROVIDER_ERROR:" in captured.err
     assert "OPENAI_API_KEY" in captured.err
     assert not (tmp_path / "out" / "RELEASE_NOTES.md").exists()
+
+
+def test_zai_free_model_is_the_recommended_preset(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.delenv(ZAI_API_KEY_ENV, raising=False)
+    monkeypatch.delenv("OPENMINION_BASE_URL", raising=False)
+    monkeypatch.delenv(ZAI_BASE_URL_ENV, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-be-used")
+    home = tmp_path / "home"
+    code = main(
+        [
+            "--changelog",
+            str(CHANGELOG),
+            "--bugs",
+            str(BUGS),
+            "--out",
+            str(tmp_path / "out"),
+            "--approval",
+            "yes",
+            "--provider",
+            "zai",
+            "--home",
+            str(home),
+            "--session-id",
+            "zai-missing-key",
+            "--timeout",
+            "30",
+            "--env-file",
+            str(tmp_path / "missing.env"),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 3, captured.out + captured.err
+    assert "provider failed: PROVIDER_ERROR:" in captured.err
+    assert ZAI_API_KEY_ENV in captured.err
+    assert not (tmp_path / "out" / "RELEASE_NOTES.md").exists()
+
+    config = json.loads((home / ".openminion" / "agents.json").read_text(encoding="utf-8"))
+    openai = config["providers"]["openai"]
+    assert openai["model"] == ZAI_DEFAULT_MODEL
+    assert openai["model"] != ZAI_PAID_PRESET_MODEL
+    assert openai["base_url"] == ZAI_BASE_URL
+    assert openai["api_key_env"] == ZAI_API_KEY_ENV
+    assert not str(openai.get("api_key") or "").strip()
+    assert config["agents"]["openminion"]["provider"] == "openai"
+    connection = config["agents"]["openminion"]["model_connections"]["zai"]
+    assert connection["provider"] == "openai"
+    assert ZAI_DEFAULT_MODEL in connection["models"]
+    assert ZAI_PAID_PRESET_MODEL not in connection["models"]
+    assert "unset" not in json.dumps(config)
+
+    monkeypatch.setenv(ZAI_BASE_URL_ENV, ZAI_CHINA_BASE_URL)
+    china = resolve_settings(provider="zai", approval="yes")
+    assert china.model == ZAI_DEFAULT_MODEL
+    assert china.base_url == ZAI_CHINA_BASE_URL
+    china_home = tmp_path / "home-china"
+    prepare_runtime_home(china_home, china)
+    china_config = json.loads(
+        (china_home / ".openminion" / "agents.json").read_text(encoding="utf-8")
+    )
+    assert china_config["providers"]["openai"]["base_url"] == ZAI_CHINA_BASE_URL
+    assert china_config["providers"]["openai"]["model"] == ZAI_DEFAULT_MODEL
+
+    monkeypatch.setenv("OPENMINION_BASE_URL", ZAI_BASE_URL)
+    overridden = resolve_settings(provider="zai", approval="yes")
+    assert overridden.base_url == ZAI_BASE_URL
 
 
 def test_deepseek_is_the_real_model_preset(tmp_path: Path, monkeypatch, capsys):

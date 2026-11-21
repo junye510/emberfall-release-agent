@@ -11,6 +11,7 @@ import sys
 
 SUPPORTED_PROVIDERS = (
     "echo",
+    "zai",
     "deepseek",
     "openai",
     "anthropic",
@@ -22,13 +23,42 @@ SUPPORTED_PROVIDERS = (
     "cortensor",
 )
 
-# `openminion setup --provider deepseek` writes an OpenAI-compatible profile.
-# `config init --provider` does not accept this preset.
+# OpenAI-compatible setup presets. `config init --provider` does not accept them.
+# Z.ai's preset default model is the paid glm-5.2, so the free model is explicit.
+ZAI_PROVIDER = "zai"
+ZAI_DEFAULT_MODEL = "glm-4.7-flash"
+ZAI_PAID_PRESET_MODEL = "glm-5.2"
+ZAI_BASE_URL = "https://api.z.ai/api/paas/v4/"
+ZAI_CHINA_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/"
+ZAI_API_KEY_ENV = "ZAI_API_KEY"
+ZAI_BASE_URL_ENV = "ZAI_BASE_URL"
+
 DEEPSEEK_PROVIDER = "deepseek"
 DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 DEEPSEEK_ALT_MODEL = "deepseek-v4-pro"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
+
+
+@dataclass(frozen=True)
+class _SetupPreset:
+    provider: str
+    default_model: str
+    base_url: str
+    api_key_env: str
+
+
+_SETUP_PRESETS = {
+    ZAI_PROVIDER: _SetupPreset(
+        ZAI_PROVIDER, ZAI_DEFAULT_MODEL, ZAI_BASE_URL, ZAI_API_KEY_ENV
+    ),
+    DEEPSEEK_PROVIDER: _SetupPreset(
+        DEEPSEEK_PROVIDER,
+        DEEPSEEK_DEFAULT_MODEL,
+        DEEPSEEK_BASE_URL,
+        DEEPSEEK_API_KEY_ENV,
+    ),
+}
 
 # config init stores Claude settings on the anthropic block.
 _PROVIDER_BLOCK = {
@@ -86,10 +116,7 @@ def resolve_settings(
         )
     selected_model = model if model is not None else os.environ.get("OPENMINION_MODEL", "")
     selected_model = selected_model.strip()
-    selected_base = (
-        base_url if base_url is not None else os.environ.get("OPENMINION_BASE_URL", "")
-    )
-    selected_base = selected_base.strip()
+    selected_base = _resolve_base_url(selected, base_url)
     if timeout_seconds is None:
         raw_timeout = os.environ.get("OPENMINION_TIMEOUT_SECONDS", "120").strip()
         try:
@@ -109,8 +136,9 @@ def resolve_settings(
     if selected_approval not in {"ask", "yes", "no"}:
         raise ValueError("Approval must be ask, yes, or no.")
     warnings: list[str] = []
-    if selected == DEEPSEEK_PROVIDER and not selected_model:
-        selected_model = DEEPSEEK_DEFAULT_MODEL
+    preset = _SETUP_PRESETS.get(selected)
+    if preset is not None and not selected_model:
+        selected_model = preset.default_model
     if selected == "echo" and selected_model:
         warnings.append(
             "OPENMINION_MODEL is ignored for the echo provider. "
@@ -136,8 +164,8 @@ def prepare_runtime_home(home: Path, settings: RuntimeSettings) -> Path:
     env = os.environ.copy()
     env["OPENMINION_HOME"] = str(home)
     env["OPENMINION_DATA_ROOT"] = str(data_root)
-    if settings.provider == DEEPSEEK_PROVIDER:
-        return _prepare_deepseek_home(home, data_root, env, settings)
+    if settings.provider in _SETUP_PRESETS:
+        return _prepare_setup_preset(home, data_root, env, settings)
     result = subprocess.run(
         [
             sys.executable,
@@ -163,32 +191,46 @@ def prepare_runtime_home(home: Path, settings: RuntimeSettings) -> Path:
     return config_path
 
 
-def _prepare_deepseek_home(
+def _resolve_base_url(provider: str, explicit: str | None) -> str:
+    """CLI flag, then OPENMINION_BASE_URL, then ZAI_BASE_URL for Z.ai."""
+
+    if explicit is not None:
+        return explicit.strip()
+    general = os.environ.get("OPENMINION_BASE_URL", "").strip()
+    if general:
+        return general
+    if provider == ZAI_PROVIDER:
+        return os.environ.get(ZAI_BASE_URL_ENV, "").strip()
+    return ""
+
+
+def _prepare_setup_preset(
     home: Path,
     data_root: Path,
     env: dict[str, str],
     settings: RuntimeSettings,
 ) -> Path:
-    """Write the DeepSeek preset with ``openminion setup``.
+    """Write a setup-catalog preset such as Z.ai or DeepSeek.
 
-    Non-interactive setup refuses to save the preset unless ``DEEPSEEK_API_KEY``
+    Non-interactive setup refuses to save the preset unless its API-key env var
     is present. When the parent process has no key, the child setup gets a
     placeholder so the profile can still be written. The placeholder is not
-    stored: ``api_key`` stays empty and ``api_key_env`` stays ``DEEPSEEK_API_KEY``.
+    stored: ``api_key`` stays empty and ``api_key_env`` stays the preset name.
     The following ``Agent.run`` then raises ``ProviderError`` from the real env.
     """
 
-    if not env.get(DEEPSEEK_API_KEY_ENV, "").strip():
-        env[DEEPSEEK_API_KEY_ENV] = "unset"
+    preset = _SETUP_PRESETS[settings.provider]
+    if not env.get(preset.api_key_env, "").strip():
+        env[preset.api_key_env] = "unset"
     command = [
         sys.executable,
         "-m",
         "openminion",
         "setup",
         "--provider",
-        DEEPSEEK_PROVIDER,
+        preset.provider,
         "--model",
-        settings.model or DEEPSEEK_DEFAULT_MODEL,
+        settings.model or preset.default_model,
         "--no-chat",
     ]
     if settings.base_url:
@@ -202,7 +244,7 @@ def _prepare_deepseek_home(
         text=True,
     )
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "deepseek setup failed").strip()
+        detail = (result.stderr or result.stdout or f"{preset.provider} setup failed").strip()
         raise RuntimeError(detail)
     config_path = data_root / "agents.json"
     _scrub_placeholder_key(config_path)
