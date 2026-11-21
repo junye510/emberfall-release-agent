@@ -45,8 +45,11 @@ python -m release_agent \
 The same preset from the OpenMinion CLI:
 
 ```bash
-export OPENMINION_HOME=$PWD
-export OPENMINION_DATA_ROOT=$OPENMINION_HOME/.openminion
+# Use the same home the CLI uses. `openminion setup` writes
+# $OPENMINION_HOME/.openminion/agents.json. OPENMINION_DATA_ROOT does not
+# choose that path; point it at the same directory so state and config stay together.
+export OPENMINION_HOME="$PWD/.openminion-home"
+export OPENMINION_DATA_ROOT="$OPENMINION_HOME/.openminion"
 export ZAI_API_KEY=...
 openminion setup --provider zai --model glm-4.7-flash --no-chat
 # bigmodel.cn keys:
@@ -55,7 +58,9 @@ openminion setup --provider zai --model glm-4.7-flash --no-chat
 openminion doctor --check-turn
 ```
 
-`$PWD/.openminion/` is gitignored.
+The CLI `--home` flag is that `OPENMINION_HOME` (default `.openminion-home`). It prints `openminion_home=` and `openminion_config=` after a run. `$OPENMINION_HOME/.openminion/` is gitignored.
+
+Hosted turns wait up to 300 seconds unless `--timeout` or `OPENMINION_TIMEOUT_SECONDS` is set. Echo stays at 120 seconds. On `glm-4.7-flash`, a turn that calls a tool has hit `TurnTimeoutError` at 180 seconds, so 300 leaves room for one provider retry cycle.
 
 DeepSeek remains available (`OPENMINION_PROVIDER=deepseek`, model `deepseek-v4-flash`, key `DEEPSEEK_API_KEY`). An account with no balance fails that turn with `ProviderError` `402` `insufficient_balance_error`. That is why Z.ai is the recommended path, and it is recorded under [What We Learned](#what-we-learned).
 
@@ -100,7 +105,7 @@ On the Cinder Orchard sample the packet recommends **hold**, because BUG-118 is 
 
 Exit codes: `0` files written, `2` approval denied or the write did not happen, `3` `ProviderError`, `4` `TurnTimeoutError`, `5` structured output failed validation, `1` other usage or runtime errors.
 
-Useful flags: `--draft-only`, `--session-id`, `--timeout`, `--home` (isolated OpenMinion config and sqlite state, default `.openminion-home/`), `--provider`, `--model`, `--base-url`.
+Useful flags: `--draft-only`, `--session-id`, `--timeout` (hosted default 300 seconds, echo default 120), `--home` (this is `OPENMINION_HOME`; config is `<home>/.openminion/agents.json`, default `.openminion-home/`), `--provider`, `--model`, `--base-url`.
 
 ## Tests
 
@@ -108,9 +113,9 @@ Useful flags: `--draft-only`, `--session-id`, `--timeout`, `--home` (isolated Op
 pytest
 ```
 
-The suite covers the changelog and bug parsers, the read and write sandbox, the offline planner, a full echo run that approves the write, a full echo run that denies it, `AgentOutputValidationError` on a non-JSON reply, `TurnTimeoutError` from `timeout_seconds`, `ProviderError` when `openai` is selected without `OPENAI_API_KEY`, the Z.ai preset (`glm-4.7-flash`, not the paid `glm-5.2`, including the bigmodel.cn base URL), and the DeepSeek preset (`deepseek-v4-flash` by default, `deepseek-v4-pro` when requested) with `ProviderError` when the matching API key is missing.
+The suite covers the changelog and bug parsers, the read and write sandbox, the offline planner, a full echo run that approves the write, a full echo run that denies it, `AgentOutputValidationError` on a non-JSON reply, `TurnTimeoutError` from `timeout_seconds`, `ProviderError` when `openai` is selected without `OPENAI_API_KEY`, the Z.ai preset (`glm-4.7-flash`, not the paid `glm-5.2`, including the bigmodel.cn base URL), the DeepSeek preset when its API key is missing, one retry for `RATE_LIMITED` and for a non-JSON final answer, the 300-second hosted timeout default, and `openminion setup` writing `agents.json` under `OPENMINION_HOME` rather than `OPENMINION_DATA_ROOT`.
 
-Last run in this workspace: **18 passed** on `openminion==0.1.24`.
+Last run in this workspace: **24 passed** on `openminion==0.1.24`.
 
 ## Switch to a real model
 
@@ -192,7 +197,7 @@ One process, two turns, one shared `APIRuntime`.
 5. A second `Agent` shares the same runtime and `session_id`, exposes `write_release_files`, and calls `run(..., thread_id=draft.thread_id, approval_callback=...)`.
 6. The write tool is a normal `@tool(idempotent=False)` with no `min_scope`. The default action policy treats that as a write of unknown reversibility and calls `approval_callback(tool_name, args, approval_id)`. The callback prints the tool, the approval id, the directory, and the sha256 of both files, then returns true or false. `--approval ask` reads stdin. `yes` and `no` are unattended.
 7. On allow, the tool writes the two files. On deny, the tool function is not called and the turn body is `Confirmation denied. The action was not run.`
-8. `ProviderError`, `TurnTimeoutError`, and `AgentOutputValidationError` are caught at the CLI and mapped to exit codes 3, 4, and 5.
+8. `ProviderError`, `TurnTimeoutError`, and `AgentOutputValidationError` are caught at the CLI and mapped to exit codes 3, 4, and 5. A `RATE_LIMITED` provider error and a non-JSON final answer each get one automatic retry. The JSON retry adds the instruction "Reply only with JSON." A second failure of the same kind exits with a message that names the Z.ai free-tier rate limit or the prose reply.
 
 Read tools declare `@tool(min_scope="READ_ONLY", idempotent=True)`, so the default policy runs them without a prompt. Both tools refuse paths outside the changelog directory, the bug-log directory, or the requested output directory.
 
@@ -308,9 +313,34 @@ The recommended path is therefore Z.ai preset `zai` with the free model `glm-4.7
 
 `openminion config init --provider zai` and `--provider deepseek` are rejected. The working commands are `openminion setup --provider zai --model glm-4.7-flash --no-chat` and `openminion setup --provider deepseek --model deepseek-v4-flash --no-chat`. Non-interactive setup also refuses to write the profile unless the preset's key env var is set (`Setup failed: Missing credential for ...`). The CLI passes a placeholder into that subprocess only when the parent environment has no key, and the saved file keeps `api_key` empty with `api_key_env` set to `ZAI_API_KEY` or `DEEPSEEK_API_KEY`.
 
+**11. glm-4.7-flash on a bigmodel.cn key: auth works on both endpoints, the free tier is one request at a time, and a turn can time out or skip the tool.**
+
+Observed on our machine with `openminion==0.1.24`, `OPENMINION_PROVIDER=zai`, `OPENMINION_MODEL=glm-4.7-flash`, and a key issued on bigmodel.cn. This workspace has no key, so these calls were not repeated here.
+
+Auth. Both endpoints accepted the key:
+
+```bash
+export OPENMINION_HOME="$PWD/.openminion-home"
+export OPENMINION_DATA_ROOT="$OPENMINION_HOME/.openminion"
+export ZAI_API_KEY=...
+openminion setup --provider zai --model glm-4.7-flash \
+  --base-url https://open.bigmodel.cn/api/paas/v4/ --no-chat
+openminion doctor --check-turn
+```
+
+`https://api.z.ai/api/paas/v4/` also accepted that same key. Use the bigmodel.cn URL for a key from that site. `ZAI_BASE_URL` and `OPENMINION_BASE_URL` both override the preset.
+
+Config path. `openminion setup` writes `agents.json` to `$OPENMINION_HOME/.openminion/agents.json`. It does not write that file under `OPENMINION_DATA_ROOT`. Repro: set `OPENMINION_HOME` and `OPENMINION_DATA_ROOT` to two different directories, run `openminion setup --provider zai --model glm-4.7-flash --no-chat`, and look for the file. It is under the home directory. The CLI sets `OPENMINION_HOME` to `--home` (default `.openminion-home`) and reads `<home>/.openminion/agents.json`. Export that same home before `doctor --check-turn`, or doctor checks a different config than the one the CLI just wrote.
+
+Rate limit. The free tier behaves like concurrency 1. A second request while one is in flight returns Zhipu `1302` `您的账户已达到速率限制` (HTTP 429). The free model also returns `1305` `该模型当前访问量过大` for long stretches when it is overloaded. OpenMinion retries for about 30 seconds and then about 60 seconds, then raises `ProviderError` with `code=RATE_LIMITED`. `openminion doctor --check-turn` failed after 130 seconds on that path. Repro: start `doctor --check-turn`, and while it is running start a second turn against the same key. The release CLI retries a `RATE_LIMITED` turn once, then prints that the free tier allows one request at a time and that you should wait before launching again.
+
+Timeout after a tool call. One draft turn did call the `@tool`, then hit `TurnTimeoutError` at 180 seconds. The log after that was `brain.tool_transcript.recovery_failed error_type=ProgrammingError`. The deadline is the caller's `timeout_seconds`; it does not include a recovery of the tool transcript. Hosted runs now default to 300 seconds. Repro: `python -m release_agent ... --provider zai --timeout 180` while glm-4.7-flash is slow. Raise `--timeout` if 300 is still too small. The `ProgrammingError` is in OpenMinion's transcript recovery after the deadline, not in the release tools.
+
+Prose instead of JSON. Another turn skipped the tool and answered in prose. The body was prefixed `openminion: `, and `output_type` raised `AgentOutputValidationError` (`Invalid JSON` at line 1 column 1). Repro: the same CLI command when the model answers without calling `compile_release_packet`. The CLI retries that turn once with the user message ending in "Reply only with JSON. Do not write prose. Do not prefix the answer with a name." If the second reply is still prose, it exits 5 and prints the raw text. The `openminion: ` prefix is the profile name the runtime adds; a JSON object after that prefix still validates, but a sentence does not.
+
 ### Pending
 
-- **Real-model run.** No `ZAI_API_KEY` or `DEEPSEEK_API_KEY` was available in this workspace, so both presets were configured and the missing-key path was tested, but no hosted completion ran. For a bigmodel.cn key, set `ZAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4/` before the first real run. Expect the 1200-character tool-result clip to matter: the packet JSON does not fit in a tool message, so the model should build the final JSON from the file texts it saw, not from the clipped `compile_release_packet` return value. DeepSeek still returns `ProviderError` `402` `insufficient_balance_error` until that account has balance.
+- **Real-model run in this workspace.** Item 11 records what glm-4.7-flash did on our box with a bigmodel.cn key. This agent environment still has no `ZAI_API_KEY`, so those calls were not repeated here. Expect the 1200-character tool-result clip to matter: the packet JSON does not fit in a tool message, so the model should build the final JSON from the file texts it saw, not from the clipped `compile_release_packet` return value. DeepSeek still returns `ProviderError` `402` `insufficient_balance_error` until that account has balance.
 - **Demo video.** Not recorded. A 1–5 minute capture of `--approval ask` on the Cinder Orchard sample, including the deny path, is the missing submission piece.
 - **Cortensor Portal / router.** The `cortensor` provider id is wired through the same env switch, with the default model `gpt-oss-20b` and base URL `http://127.0.0.1:8080/api/v2/completions`. Nothing was listening, and there was no `CORTENSOR_API_KEY`, so that path was not executed.
 

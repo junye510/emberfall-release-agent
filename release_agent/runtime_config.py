@@ -39,6 +39,11 @@ DEEPSEEK_ALT_MODEL = "deepseek-v4-pro"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_API_KEY_ENV = "DEEPSEEK_API_KEY"
 
+# Echo turns are local. Hosted free tiers, especially glm-4.7-flash, can spend
+# the first attempt inside provider retries and still need room for tools.
+ECHO_DEFAULT_TIMEOUT_SECONDS = 120.0
+HOSTED_DEFAULT_TIMEOUT_SECONDS = 300.0
+
 
 @dataclass(frozen=True)
 class _SetupPreset:
@@ -118,13 +123,18 @@ def resolve_settings(
     selected_model = selected_model.strip()
     selected_base = _resolve_base_url(selected, base_url)
     if timeout_seconds is None:
-        raw_timeout = os.environ.get("OPENMINION_TIMEOUT_SECONDS", "120").strip()
-        try:
-            timeout_seconds = float(raw_timeout)
-        except ValueError as exc:
-            raise ValueError(
-                f"OPENMINION_TIMEOUT_SECONDS must be a number, got {raw_timeout!r}."
-            ) from exc
+        raw_timeout = os.environ.get("OPENMINION_TIMEOUT_SECONDS", "").strip()
+        if raw_timeout:
+            try:
+                timeout_seconds = float(raw_timeout)
+            except ValueError as exc:
+                raise ValueError(
+                    f"OPENMINION_TIMEOUT_SECONDS must be a number, got {raw_timeout!r}."
+                ) from exc
+        elif selected == "echo":
+            timeout_seconds = ECHO_DEFAULT_TIMEOUT_SECONDS
+        else:
+            timeout_seconds = HOSTED_DEFAULT_TIMEOUT_SECONDS
     if timeout_seconds <= 0:
         raise ValueError("Timeout must be greater than zero.")
     selected_approval = (
@@ -156,13 +166,27 @@ def resolve_settings(
     )
 
 
+def agents_config_path(home: Path) -> Path:
+    """Path ``openminion setup`` actually writes.
+
+    Setup stores ``agents.json`` at ``$OPENMINION_HOME/.openminion/agents.json``.
+    ``OPENMINION_DATA_ROOT`` does not choose that file. Keep the two variables
+    pointed at the same home so doctor and the CLI read one config.
+    """
+
+    return home.expanduser().resolve() / ".openminion" / "agents.json"
+
+
 def prepare_runtime_home(home: Path, settings: RuntimeSettings) -> Path:
     """Create agents.json for one isolated OpenMinion home."""
 
+    home = home.expanduser().resolve()
     home.mkdir(parents=True, exist_ok=True)
     data_root = home / ".openminion"
     env = os.environ.copy()
     env["OPENMINION_HOME"] = str(home)
+    # Align state with the directory setup uses for agents.json. A different
+    # DATA_ROOT would not move the config file.
     env["OPENMINION_DATA_ROOT"] = str(data_root)
     if settings.provider in _SETUP_PRESETS:
         return _prepare_setup_preset(home, data_root, env, settings)

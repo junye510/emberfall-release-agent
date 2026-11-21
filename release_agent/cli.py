@@ -10,7 +10,7 @@ from uuid import uuid4
 from openminion import AgentOutputValidationError, ProviderError, TurnTimeoutError
 
 from release_agent.runtime_config import load_dotenv, resolve_settings
-from release_agent.workflow import run_release
+from release_agent.workflow import RateLimitedError, StructuredOutputError, run_release
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,7 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout",
         type=float,
         default=None,
-        help="Turn deadline in seconds. Defaults to OPENMINION_TIMEOUT_SECONDS or 120.",
+        help=(
+            "Turn deadline in seconds. Defaults to OPENMINION_TIMEOUT_SECONDS, "
+            "otherwise 120 for echo and 300 for a hosted provider."
+        ),
     )
     parser.add_argument(
         "--session-id",
@@ -60,7 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--home",
         type=Path,
         default=Path(".openminion-home"),
-        help="Isolated OPENMINION_HOME for config and session storage.",
+        help=(
+            "OPENMINION_HOME for this run. openminion setup writes "
+            "agents.json to <home>/.openminion/agents.json. "
+            "OPENMINION_DATA_ROOT does not choose that path."
+        ),
     )
     parser.add_argument(
         "--draft-only",
@@ -107,6 +114,15 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print(exc, file=sys.stderr)
         return 1
+    except RateLimitedError as exc:
+        print(str(exc), file=sys.stderr)
+        print(
+            f"provider failed: {exc.original.code}: {exc.original.message}",
+            file=sys.stderr,
+        )
+        if exc.original.details:
+            print(f"provider details: {exc.original.details}", file=sys.stderr)
+        return 3
     except ProviderError as exc:
         print(f"provider failed: {exc.code}: {exc.message}", file=sys.stderr)
         if exc.details:
@@ -114,7 +130,16 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     except TurnTimeoutError as exc:
         print(f"turn timed out: {exc}", file=sys.stderr)
+        print(
+            "Hosted turns default to 300 seconds. Raise --timeout if the model "
+            "is still inside a tool call.",
+            file=sys.stderr,
+        )
         return 4
+    except StructuredOutputError as exc:
+        print(str(exc), file=sys.stderr)
+        print(exc.raw_text, file=sys.stderr)
+        return 5
     except AgentOutputValidationError as exc:
         print("structured output failed validation.", file=sys.stderr)
         print(exc.raw_text, file=sys.stderr)
@@ -140,6 +165,8 @@ def _print_outcome(outcome, *, draft_only: bool) -> None:
             f"provider:{outcome.reported_provider or 'unknown'} "
             f"model:{outcome.reported_model or 'unknown'}"
         )
+    print(f"openminion_home={outcome.openminion_home}")
+    print(f"openminion_config={outcome.openminion_home / '.openminion' / 'agents.json'}")
     print(f"session_id={outcome.session_id}")
     print(f"draft_thread_id={outcome.draft_thread_id or ''}")
     if not draft_only:

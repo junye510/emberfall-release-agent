@@ -7,7 +7,9 @@ from pathlib import Path
 import hashlib
 from collections.abc import Callable
 
-from openminion import APIRuntime, Agent
+import sys
+
+from openminion import APIRuntime, Agent, AgentOutputValidationError, ProviderError
 
 from release_agent.models import ReleasePacket, packet_json
 from release_agent.render import render_release_notes
@@ -41,6 +43,76 @@ When the user message says stage: publish:
 """.strip()
 
 _YES = {"yes", "y", "proceed", "go", "confirm", "sure", "affirmative", "sounds good"}
+_JSON_ONLY_INSTRUCTION = (
+    "Reply only with JSON. Do not write prose. Do not prefix the answer with a name. "
+    "The final answer must be one JSON object and nothing else."
+)
+
+
+class RateLimitedError(Exception):
+    """A hosted turn stayed rate-limited after one retry."""
+
+    def __init__(self, message: str, *, original: ProviderError) -> None:
+        super().__init__(message)
+        self.original = original
+        self.code = original.code
+
+
+class StructuredOutputError(Exception):
+    """Structured output was still not JSON after one stricter retry."""
+
+    def __init__(self, message: str, *, raw_text: str) -> None:
+        super().__init__(message)
+        self.raw_text = raw_text
+
+
+def run_turn_with_retry(run: Callable[[str], object], message: str, *, json_retry: bool) -> object:
+    """Run one turn, and retry once on a rate limit or a non-JSON final answer.
+
+    ``run`` receives the user message. The JSON retry appends a stricter
+    instruction. A second failure of the same kind becomes a clear error.
+    """
+
+    try:
+        return run(message)
+    except ProviderError as exc:
+        if str(getattr(exc, "code", "")) != "RATE_LIMITED":
+            raise
+        print(
+            "Provider rate limited (RATE_LIMITED). Retrying this turn once.",
+            file=sys.stderr,
+        )
+        try:
+            return run(message)
+        except ProviderError as second:
+            if str(getattr(second, "code", "")) != "RATE_LIMITED":
+                raise
+            raise RateLimitedError(
+                "The provider stayed rate-limited after one retry. "
+                "Z.ai's free tier allows about one request at a time "
+                "(Zhipu 1302, HTTP 429) and glm-4.7-flash often returns 1305 "
+                "when it is overloaded. OpenMinion already waited through its "
+                "own retries before raising RATE_LIMITED. Wait, then run again.",
+                original=second,
+            ) from second
+    except AgentOutputValidationError as exc:
+        if not json_retry:
+            raise
+        print(
+            "The model reply was not JSON. Retrying once with a reply-only-with-JSON instruction.",
+            file=sys.stderr,
+        )
+        retry_message = f"{message.rstrip()}\n\n{_JSON_ONLY_INSTRUCTION}"
+        try:
+            return run(retry_message)
+        except AgentOutputValidationError as second:
+            raise StructuredOutputError(
+                "The model replied with prose instead of the release JSON "
+                "(the body is often prefixed with 'openminion: '). "
+                "A second turn asked it to reply only with JSON, and that reply "
+                "also failed validation.",
+                raw_text=second.raw_text,
+            ) from second
 
 
 @dataclass(frozen=True)
@@ -57,6 +129,7 @@ class ReleaseOutcome:
     reported_provider: str
     reported_model: str
     output_dir: Path
+    openminion_home: Path
 
 
 def run_release(
@@ -101,6 +174,7 @@ def run_release(
                     changelog=changelog,
                     bugs=bugs,
                     output_dir=output_dir,
+                    home=home.expanduser().resolve(),
                     session_id=session_id,
                     settings=settings,
                     draft_only=draft_only,
@@ -116,6 +190,7 @@ def _run_with_runtime(
     changelog: Path,
     bugs: Path,
     output_dir: Path,
+    home: Path,
     session_id: str,
     settings: RuntimeSettings,
     draft_only: bool,
@@ -139,7 +214,11 @@ def _run_with_runtime(
         session_id=session_id,
         runtime=runtime,
     ) as draft_agent:
-        draft = draft_agent.run(draft_message, timeout_seconds=settings.timeout_seconds)
+        draft = run_turn_with_retry(
+            lambda text: draft_agent.run(text, timeout_seconds=settings.timeout_seconds),
+            draft_message,
+            json_retry=True,
+        )
     packet = draft.output
     if not isinstance(packet, ReleasePacket):
         raise RuntimeError("Draft turn did not return a ReleasePacket.")
@@ -162,6 +241,7 @@ def _run_with_runtime(
             reported_provider=reported_provider,
             reported_model=reported_model,
             output_dir=output_dir,
+            openminion_home=home,
         )
 
     decision: dict[str, bool | None] = {"allow": None}
@@ -190,11 +270,15 @@ def _run_with_runtime(
         session_id=session_id,
         runtime=runtime,
     ) as publish_agent:
-        published = publish_agent.run(
+        published = run_turn_with_retry(
+            lambda text: publish_agent.run(
+                text,
+                thread_id=draft.thread_id,
+                timeout_seconds=settings.timeout_seconds,
+                approval_callback=approval_callback,
+            ),
             publish_message,
-            thread_id=draft.thread_id,
-            timeout_seconds=settings.timeout_seconds,
-            approval_callback=approval_callback,
+            json_retry=False,
         )
     notes_path = output_dir / "RELEASE_NOTES.md"
     packet_path = output_dir / "release-packet.json"
@@ -212,6 +296,7 @@ def _run_with_runtime(
         reported_provider=str(published.metadata.get("provider", "") or reported_provider),
         reported_model=str(published.metadata.get("model", "") or reported_model),
         output_dir=output_dir,
+        openminion_home=home,
     )
 
 
