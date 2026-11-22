@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emberfall-release-agent"
+version = "0.1.0"
+description = "Indie game release assistant for Emberfall, built on the OpenMinion 0.1.24 Python SDK."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["openminion==0.1.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[project.scripts]
+emberfall-release = "release_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["release_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
