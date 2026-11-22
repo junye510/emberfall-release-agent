@@ -115,7 +115,7 @@ pytest
 
 The suite covers the changelog and bug parsers, the read and write sandbox, the offline planner, a full echo run that approves the write, a full echo run that denies it, `AgentOutputValidationError` on a non-JSON reply, `TurnTimeoutError` from `timeout_seconds`, `ProviderError` when `openai` is selected without `OPENAI_API_KEY`, the Z.ai preset (`glm-4.7-flash`, not the paid `glm-5.2`, including the bigmodel.cn base URL), the DeepSeek preset when its API key is missing, one retry for `RATE_LIMITED` and for a non-JSON final answer, the 300-second hosted timeout default, and `openminion setup` writing `agents.json` under `OPENMINION_HOME` rather than `OPENMINION_DATA_ROOT`.
 
-Last run in this workspace: **24 passed** on `openminion==0.1.24`.
+Last run in this workspace: **29 passed** on `openminion==0.1.24`.
 
 ## Switch to a real model
 
@@ -337,6 +337,16 @@ Rate limit. The free tier behaves like concurrency 1. A second request while one
 Timeout after a tool call. One draft turn did call the `@tool`, then hit `TurnTimeoutError` at 180 seconds. The log after that was `brain.tool_transcript.recovery_failed error_type=ProgrammingError`. The deadline is the caller's `timeout_seconds`; it does not include a recovery of the tool transcript. Hosted runs now default to 300 seconds. Repro: `python -m release_agent ... --provider zai --timeout 180` while glm-4.7-flash is slow. Raise `--timeout` if 300 is still too small. The `ProgrammingError` is in OpenMinion's transcript recovery after the deadline, not in the release tools.
 
 Prose instead of JSON. Another turn skipped the tool and answered in prose. The body was prefixed `openminion: `, and `output_type` raised `AgentOutputValidationError` (`Invalid JSON` at line 1 column 1). Repro: the same CLI command when the model answers without calling `compile_release_packet`. The CLI retries that turn once with the user message ending in "Reply only with JSON. Do not write prose. Do not prefix the answer with a name." If the second reply is still prose, it exits 5 and prints the raw text. The `openminion: ` prefix is the profile name the runtime adds; a JSON object after that prefix still validates, but a sentence does not.
+
+GLM also wraps a correct object in a markdown fence, and both the first turn and that JSON-only retry then failed validation:
+
+```text
+openminion: ```json
+{ ...valid release JSON... }
+```
+```
+
+`glm-4.7-flash` did this on an overnight Z.ai run: the packet itself was valid, and the CLI still exited 5. The draft turn now strips an optional `openminion:` prefix and ```json or bare ``` fences, takes the first balanced JSON object, and validates that object with `ReleasePacket` unchanged. Prose around the object is ignored. A fence does not skip schema checks.
 
 ### Pending
 

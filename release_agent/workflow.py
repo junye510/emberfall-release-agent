@@ -11,6 +11,7 @@ import sys
 
 from openminion import APIRuntime, Agent, AgentOutputValidationError, ProviderError
 
+from release_agent.json_extract import parse_release_packet
 from release_agent.models import ReleasePacket, packet_json
 from release_agent.render import render_release_notes
 from release_agent.runtime_config import RuntimeSettings, prepare_runtime_home
@@ -208,18 +209,22 @@ def _run_with_runtime(
     with Agent(
         name="emberfall-release",
         instructions=_INSTRUCTIONS,
-        output_type=ReleasePacket,
         tools=[read_release_file, compile_release_packet],
         forced_tools=["read_release_file", "compile_release_packet"],
         session_id=session_id,
         runtime=runtime,
     ) as draft_agent:
-        draft = run_turn_with_retry(
-            lambda text: draft_agent.run(text, timeout_seconds=settings.timeout_seconds),
+        def _draft_turn(text: str):
+            result = draft_agent.run(text, timeout_seconds=settings.timeout_seconds)
+            # Validate here, not via Agent(output_type=...), so a fenced reply
+            # still yields session_id and thread_id when the object is valid.
+            return result, parse_release_packet(result.text)
+
+        draft, packet = run_turn_with_retry(
+            _draft_turn,
             draft_message,
             json_retry=True,
         )
-    packet = draft.output
     if not isinstance(packet, ReleasePacket):
         raise RuntimeError("Draft turn did not return a ReleasePacket.")
     notes = render_release_notes(packet)
