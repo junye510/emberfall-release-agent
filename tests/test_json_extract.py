@@ -5,7 +5,7 @@ import json
 import pytest
 from openminion import AgentOutputValidationError
 
-from release_agent.json_extract import extract_json_object, parse_release_packet
+from release_agent.json_extract import extract_json_object, extract_json_objects, parse_release_packet
 from release_agent.models import ReleasePacket
 
 PACKET = {
@@ -72,3 +72,26 @@ def test_braces_inside_strings_do_not_end_the_object():
     packet["highlights"] = ["Keep the {ember} lit"]
     text = "Note before.\n" + json.dumps(packet) + "\nNote after {not json}."
     assert parse_release_packet(text).highlights == ["Keep the {ember} lit"]
+
+
+def test_trailing_comma_and_a_brace_inside_a_string():
+    packet = dict(PACKET)
+    packet["highlights"] = ["Keep the } ember, then rest"]
+    broken = json.dumps(packet, indent=2)[:-1] + ",\n}"
+    text = "openminion: ```json\n" + broken + "\n```"
+    parsed = parse_release_packet(text)
+    assert parsed.highlights == ["Keep the } ember, then rest"]
+    assert parsed.ship_recommendation == "hold"
+    assert parsed.bugs[0].id == "BUG-118"
+
+
+def test_tilde_fence_without_a_language_tag():
+    text = "~~~\n" + _body() + "\n~~~"
+    assert parse_release_packet(text).version == "0.4.0"
+    assert parse_release_packet(text).bugs[0].priority == 0
+
+
+def test_every_top_level_object_is_returned_in_order():
+    text = '{"game": "draft"}\n' + _body()
+    objects = extract_json_objects(text)
+    assert [json.loads(item)["game"] for item in objects] == ["draft", "Emberfall"]

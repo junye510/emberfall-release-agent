@@ -46,6 +46,8 @@ def test_validation_error_retries_once_with_json_instruction():
     assert run_turn_with_retry(run, "stage: draft", json_retry=True) == "ok"
     assert len(calls) == 2
     assert "Reply only with JSON" in calls[1]
+    assert "ship_recommendation" in calls[1]
+    assert "recommendation_reason" in calls[1]
     assert calls[1].startswith("stage: draft")
 
 
