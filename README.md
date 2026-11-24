@@ -117,7 +117,9 @@ The suite covers the changelog and bug parsers, the read and write sandbox, the 
 
 A recorded glm-4.7-flash reply, with an openminion prefix and a json fence, is covered too. Strict `ReleasePacket` validation still rejects that object. The packet shown for approval is the one compiled from the changelog and playtest log: the changelog entries, the playtest bugs, and the ship recommendation.
 
-Last run in this workspace: **46 passed** on `openminion==0.1.24`.
+Hosted entry tool calls are covered too. OpenMinion rejects a missing `task_update` once a task exists, and it rejects a duplicated or misquoted sidecar before any tool runs. The suite reproduces that rejection, then runs a simulated glm-4.7-flash provider that omits the sidecar on the write and puts a bad one on both draft reads. The run still reads, compiles, asks for approval, and writes the exact bytes.
+
+Last run in this workspace: **52 passed** on `openminion==0.1.24`.
 
 ## Switch to a real model
 
@@ -290,6 +292,8 @@ A short text follow-up on the same thread does work. Probe: `run("Remember that 
 The failing path is an entry tool call on a thread that already has a task. `resolve_entry_task_update` raises `Missing task_update for a clarification or active request` when the task exists and the tool call has no `task_update`. The first draft turn's task was revision 1 with `objective_kind=verbatim`, so the follow-up has to be `operation: update` (not `start`), `expected_revision: 1`, a `user_quote` copied verbatim from the new user message, and a resolved `objective`. The runtime strips `task_update` before the tool handler runs. `forced_tools=["write_release_files"]` made that write the entry tool, which is why the publish agent offers the tool but does not force it.
 
 On 0.1.24 the entry instruction changed from `include task_update` to `include exactly one task_update`. A check for the 0.1.22 phrase stopped attaching the sidecar, and the publish turn failed again with the same "could not safely update the task conditions" reply. Matching the field name `task_update` restored approve and deny. Repro on 0.1.24: run the release CLI with `--approval no` against echo while the completer only attaches `task_update` when the system prompt contains the exact 0.1.22 words.
+
+That echo completer never ran for Z.ai, DeepSeek, or any other hosted provider. The entry schema still offers `task_update`, so glm-4.7-flash emits the real `read_release_file` calls and either leaves the sidecar off or copies it onto every call with a quote that is not the user message. OpenMinion then logs `brain.task_context.rejected` / `invalid_or_missing_update` and returns the sentence above without executing the tools. A fresh task can omit the sidecar; two sidecars, a bad quote, or a missing sidecar on the publish turn cannot. The release run wraps provider `complete` and replaces whatever the model put there with one sidecar taken from the entry prompt: `start` at revision 0, `update` at the current revision, and a `user_quote` copied from the user message. The runtime still strips that field before `read_release_file`, `compile_release_packet`, and `write_release_files`.
 
 **6. `timeout_seconds` does not cover runtime construction.**
 

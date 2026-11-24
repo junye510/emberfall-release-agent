@@ -19,6 +19,7 @@ from release_agent.models import ReleasePacket, packet_json
 from release_agent.render import render_release_notes
 from release_agent.runtime_config import RuntimeSettings, prepare_runtime_home
 from release_agent.scripted import install_scripted_echo
+from release_agent.task_update import install_entry_task_update_repair
 from release_agent.tools import (
     ReleaseBounds,
     compile_release_packet,
@@ -260,7 +261,7 @@ def run_release(
         output_dir=output_dir,
     )
     scripted = install_scripted_echo() if settings.provider == "echo" else _nullcontext()
-    with scripted:
+    with scripted, install_entry_task_update_repair():
         runtime = APIRuntime.from_config_path(
             str(config_path),
             home_root=str(home),
@@ -374,7 +375,8 @@ def _run_with_runtime(
     # entry phase treats the only offered tool as the task-update carrier and
     # rejects the call unless arguments include task_update. Leaving the tool
     # available, without forcing it, lets entry answer in text and the act
-    # phase perform the write.
+    # phase perform the write. Hosted models still call the tool at entry;
+    # install_entry_task_update_repair supplies the sidecar those calls omit.
     with Agent(
         name="emberfall-release",
         instructions=_INSTRUCTIONS,
