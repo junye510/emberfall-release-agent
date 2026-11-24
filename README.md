@@ -113,9 +113,11 @@ Useful flags: `--draft-only`, `--session-id`, `--timeout` (hosted default 300 se
 pytest
 ```
 
-The suite covers the changelog and bug parsers, the read and write sandbox, the offline planner, a full echo run that approves the write, a full echo run that denies it, `AgentOutputValidationError` on a non-JSON reply, `TurnTimeoutError` from `timeout_seconds`, `ProviderError` when `openai` is selected without `OPENAI_API_KEY`, the Z.ai preset (`glm-4.7-flash`, not the paid `glm-5.2`, including the bigmodel.cn base URL), the DeepSeek preset when its API key is missing, one retry for `RATE_LIMITED` and for a non-JSON final answer, the 300-second hosted timeout default, and `openminion setup` writing `agents.json` under `OPENMINION_HOME` rather than `OPENMINION_DATA_ROOT`.
+The suite covers the changelog and bug parsers, the read and write sandbox, the offline planner, a full echo run that approves the write, a full echo run that denies it, `AgentOutputValidationError` on a non-JSON reply, `TurnTimeoutError` from `timeout_seconds`, `ProviderError` when `openai` is selected without `OPENAI_API_KEY`, the Z.ai preset (`glm-4.7-flash`, not the paid `glm-5.2`, including the bigmodel.cn base URL), the DeepSeek preset when its API key is missing, one retry for `RATE_LIMITED` and for a final answer with no JSON object, the 300-second hosted timeout default, and `openminion setup` writing `agents.json` under `OPENMINION_HOME` rather than `OPENMINION_DATA_ROOT`.
 
-Last run in this workspace: **29 passed** on `openminion==0.1.24`.
+A recorded glm-4.7-flash reply, with an openminion prefix and a json fence, is covered too. Strict `ReleasePacket` validation still rejects that object. The packet shown for approval is the one compiled from the changelog and playtest log: the changelog entries, the playtest bugs, and the ship recommendation.
+
+Last run in this workspace: **46 passed** on `openminion==0.1.24`.
 
 ## Switch to a real model
 
@@ -197,7 +199,7 @@ One process, two turns, one shared `APIRuntime`.
 5. A second `Agent` shares the same runtime and `session_id`, exposes `write_release_files`, and calls `run(..., thread_id=draft.thread_id, approval_callback=...)`.
 6. The write tool is a normal `@tool(idempotent=False)` with no `min_scope`. The default action policy treats that as a write of unknown reversibility and calls `approval_callback(tool_name, args, approval_id)`. The callback prints the tool, the approval id, the directory, and the sha256 of both files, then returns true or false. `--approval ask` reads stdin. `yes` and `no` are unattended.
 7. On allow, the tool writes the two files. On deny, the tool function is not called and the turn body is `Confirmation denied. The action was not run.`
-8. `ProviderError`, `TurnTimeoutError`, and `AgentOutputValidationError` are caught at the CLI and mapped to exit codes 3, 4, and 5. A `RATE_LIMITED` provider error and a non-JSON final answer each get one automatic retry. The JSON retry adds the instruction "Reply only with JSON." A second failure of the same kind exits with a message that names the Z.ai free-tier rate limit or the prose reply.
+8. `ProviderError`, `TurnTimeoutError`, and `AgentOutputValidationError` are caught at the CLI and mapped to exit codes 3, 4, and 5. A `RATE_LIMITED` provider error and a final answer with no JSON object each get one automatic retry. The JSON retry tells the model to reply with one object that includes `ship_recommendation` and `recommendation_reason`. A JSON object that is not the compiled packet does not fail the run: stderr says so, and the human is shown the packet compiled from the changelog and playtest log. Approval still covers those exact bytes before a write. A second reply with no JSON object exits 5.
 
 Read tools declare `@tool(min_scope="READ_ONLY", idempotent=True)`, so the default policy runs them without a prompt. Both tools refuse paths outside the changelog directory, the bug-log directory, or the requested output directory.
 
@@ -336,21 +338,30 @@ Rate limit. The free tier behaves like concurrency 1. A second request while one
 
 Timeout after a tool call. One draft turn did call the `@tool`, then hit `TurnTimeoutError` at 180 seconds. The log after that was `brain.tool_transcript.recovery_failed error_type=ProgrammingError`. The deadline is the caller's `timeout_seconds`; it does not include a recovery of the tool transcript. Hosted runs now default to 300 seconds. Repro: `python -m release_agent ... --provider zai --timeout 180` while glm-4.7-flash is slow. Raise `--timeout` if 300 is still too small. The `ProgrammingError` is in OpenMinion's transcript recovery after the deadline, not in the release tools.
 
-Prose instead of JSON. Another turn skipped the tool and answered in prose. The body was prefixed `openminion: `, and `output_type` raised `AgentOutputValidationError` (`Invalid JSON` at line 1 column 1). Repro: the same CLI command when the model answers without calling `compile_release_packet`. The CLI retries that turn once with the user message ending in "Reply only with JSON. Do not write prose. Do not prefix the answer with a name." If the second reply is still prose, it exits 5 and prints the raw text. The `openminion: ` prefix is the profile name the runtime adds; a JSON object after that prefix still validates, but a sentence does not.
+Prose instead of JSON. Another turn skipped the tool and answered in prose. The body was prefixed `openminion: `, and validation raised `AgentOutputValidationError` (`Invalid JSON` at line 1 column 1). Repro: the same CLI command when the model answers without calling `compile_release_packet`. The CLI retries that turn once. The added instruction starts with "Reply only with JSON. Do not write prose. Do not prefix the answer with a name." and names `ship_recommendation` and `recommendation_reason`. If the second reply still has no JSON object, it exits 5 and prints the raw text. The `openminion: ` prefix is the profile name the runtime adds. A JSON object after that prefix can validate. A sentence cannot.
 
-GLM also wraps a correct object in a markdown fence, and both the first turn and that JSON-only retry then failed validation:
+GLM also wraps its reply in a markdown fence. On a live glm-4.7-flash run the object inside the fence was not a `ReleasePacket`. It looked like this, with `ship_recommendation` and `recommendation_reason` absent:
 
-```text
-openminion: ```json
-{ ...valid release JSON... }
-```
-```
+    openminion: ```json
+    {
+      "game": "Emberfall 0.4.0-rc.3 Changelog",
+      "version": "unversioned",
+      "highlights": [],
+      "fixes": [],
+      "known_issues": [],
+      "bugs": [ ... ]
+    }
+    ```
 
-`glm-4.7-flash` did this on an overnight Z.ai run: the packet itself was valid, and the CLI still exited 5. The draft turn now strips an optional `openminion:` prefix and ```json or bare ``` fences, takes the first balanced JSON object, and validates that object with `ReleasePacket` unchanged. Prose around the object is ignored. A fence does not skip schema checks.
+The retry that only said "reply with JSON" returned the same shape. The changelog lists were empty and the game title was not the changelog's H1, so filling in a ship decision and accepting the object would have dropped the patch notes. Other replies name bug fields differently (`bug_id`, `details`, `priority: "P0"`) or send a dict instead of a list.
+
+The draft turn strips an optional `openminion:` prefix, json fences (backtick or tilde), and trailing commas, then looks for a JSON object. `ReleasePacket` is unchanged: that glm object still fails `parse_release_packet`. The packet rendered for approval is `compile_release` of the changelog and playtest log. A reply object is kept when it is that packet. A different object is discarded, including one with missing keys, empty highlights, a dropped P0, or an invented bug or highlight. Stderr says the compiled packet is what approval will show. The human still confirms those exact bytes before a write. A reply with no JSON object is retried once and then exits 5.
+
+The compile tool's JSON is about 2.4 KB. OpenMinion clips tool results at 1200 characters, which cuts off `ship_recommendation` at the end of the object. The draft instructions tell the model to rebuild every key from the file texts it read. When that rebuild drifts, the host uses `compile_release` on the same files.
 
 ### Pending
 
-- **Real-model run in this workspace.** Item 11 records what glm-4.7-flash did on our box with a bigmodel.cn key. This agent environment still has no `ZAI_API_KEY`, so those calls were not repeated here. Expect the 1200-character tool-result clip to matter: the packet JSON does not fit in a tool message, so the model should build the final JSON from the file texts it saw, not from the clipped `compile_release_packet` return value. DeepSeek still returns `ProviderError` `402` `insufficient_balance_error` until that account has balance.
+- **Real-model run in this workspace.** Item 11 records what glm-4.7-flash did on our box with a bigmodel.cn key, including the fenced object that failed validation. This agent environment still has no `ZAI_API_KEY`, so those calls were not repeated here. The packet JSON is about 2.4 KB and the tool result is clipped at 1200 characters. A drifted reply now reviews the packet compiled from the files. DeepSeek still returns `ProviderError` `402` `insufficient_balance_error` until that account has balance.
 - **Demo video.** Not recorded. A 1–5 minute capture of `--approval ask` on the Cinder Orchard sample, including the deny path, is the missing submission piece.
 - **Cortensor Portal / router.** The `cortensor` provider id is wired through the same env switch, with the default model `gpt-oss-20b` and base URL `http://127.0.0.1:8080/api/v2/completions`. Nothing was listening, and there was no `CORTENSOR_API_KEY`, so that path was not executed.
 

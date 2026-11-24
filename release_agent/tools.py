@@ -81,7 +81,14 @@ def read_release_file(path: str) -> str:
 
 @tool(min_scope="READ_ONLY", idempotent=True)
 def compile_release_packet(changelog_text: str, bug_log_text: str) -> str:
-    """Turn changelog text and a playtest log into the release packet JSON."""
+    """Turn changelog text and a playtest log into the release packet JSON.
+
+    Pass both file texts unchanged. The object includes game, version, codename,
+    released_on, highlights, fixes, known_issues, bugs, ship_recommendation
+    (hold, ship-with-caveats, or ship), and recommendation_reason. The runtime
+    may clip this return value. The final answer still needs every key, every
+    changelog bullet, and every playtest bug.
+    """
 
     text = packet_json(compile_release(changelog_text, bug_log_text))
     _compiled_packet_json["value"] = text

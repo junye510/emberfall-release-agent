@@ -5,13 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
+import json
 from collections.abc import Callable
 
 import sys
 
 from openminion import APIRuntime, Agent, AgentOutputValidationError, ProviderError
+from pydantic import ValidationError
 
-from release_agent.json_extract import parse_release_packet
+from release_agent.compile import compile_release
+from release_agent.json_extract import extract_json_objects
 from release_agent.models import ReleasePacket, packet_json
 from release_agent.render import render_release_notes
 from release_agent.runtime_config import RuntimeSettings, prepare_runtime_home
@@ -34,7 +37,13 @@ When the user message says stage: draft:
 1. Call read_release_file with changelog_path.
 2. Call read_release_file with bug_log_path.
 3. Call compile_release_packet with those exact file texts.
-4. Your final answer is the JSON object from compile_release_packet and nothing else.
+4. Your final answer is one JSON object and nothing else. Include every key
+   from compile_release_packet, including ship_recommendation
+   (hold, ship-with-caveats, or ship) and recommendation_reason.
+   The runtime may clip that tool result before you see it. Rebuild the object
+   from the file texts you read: every changelog bullet, every playtest bug,
+   and no entries that are not in those files. Do not wrap the object in
+   markdown fences or prefix it with a name.
 
 When the user message says stage: publish:
 1. Call write_release_files exactly once.
@@ -46,7 +55,30 @@ When the user message says stage: publish:
 _YES = {"yes", "y", "proceed", "go", "confirm", "sure", "affirmative", "sounds good"}
 _JSON_ONLY_INSTRUCTION = (
     "Reply only with JSON. Do not write prose. Do not prefix the answer with a name. "
-    "The final answer must be one JSON object and nothing else."
+    "Do not wrap the object in markdown fences. "
+    "The final answer must be one JSON object and nothing else. "
+    "Required keys are game, version, codename, released_on, highlights, fixes, "
+    "known_issues, bugs, ship_recommendation, and recommendation_reason. "
+    "ship_recommendation is hold, ship-with-caveats, or ship. "
+    "Copy the compile_release_packet JSON. Include every changelog bullet and every "
+    "playtest bug, and do not add entries that are not in those files."
+)
+_PACKET_KEYS = (
+    "game",
+    "version",
+    "codename",
+    "released_on",
+    "highlights",
+    "fixes",
+    "known_issues",
+    "bugs",
+    "ship_recommendation",
+    "recommendation_reason",
+)
+_COMPILED_PACKET_NOTE = (
+    "The model JSON did not match the release packet compiled from the changelog "
+    "and playtest log. Approval will show the compiled packet, including its "
+    "changelog entries, playtest bugs, and ship recommendation."
 )
 
 
@@ -65,6 +97,73 @@ class StructuredOutputError(Exception):
     def __init__(self, message: str, *, raw_text: str) -> None:
         super().__init__(message)
         self.raw_text = raw_text
+
+
+def packet_from_model_reply(
+    text: str,
+    *,
+    changelog_text: str,
+    bug_log_text: str,
+) -> ReleasePacket:
+    """Return the release packet the human should review.
+
+    The packet compiled from the changelog and playtest log is the source of
+    release facts. A model reply is accepted only when one of its JSON objects
+    is that packet. GLM often wraps a different object: an openminion prefix,
+    a json fence, version "unversioned", empty changelog lists, and no
+    ship_recommendation. Filling those gaps from the reply would keep the
+    empty changelog and could drop or invent bugs. The compiled packet is what
+    gets rendered and approved instead. A reply with no JSON object still
+    raises, so prose is retried rather than treated as a packet.
+    """
+
+    source = compile_release(changelog_text, bug_log_text)
+    objects = extract_json_objects(text)
+    if not objects:
+        raise AgentOutputValidationError(
+            "Reply did not contain a JSON object.",
+            raw_text=text,
+        )
+    for raw in objects:
+        try:
+            parsed = ReleasePacket.model_validate_json(raw)
+        except ValidationError:
+            continue
+        if _same_packet(parsed, source):
+            return source
+    print(_mismatch_note(objects), file=sys.stderr)
+    return source
+
+
+def _same_packet(parsed: ReleasePacket, source: ReleasePacket) -> bool:
+    left = parsed.model_dump()
+    right = source.model_dump()
+    left["bugs"] = sorted(left["bugs"], key=lambda bug: bug["id"])
+    right["bugs"] = sorted(right["bugs"], key=lambda bug: bug["id"])
+    return left == right
+
+
+def _mismatch_note(objects: list[str]) -> str:
+    missing = _missing_packet_keys(objects)
+    if not missing:
+        return _COMPILED_PACKET_NOTE
+    listed = ", ".join(missing)
+    return f"{_COMPILED_PACKET_NOTE} The reply JSON was missing: {listed}."
+
+
+def _missing_packet_keys(objects: list[str]) -> list[str]:
+    best: list[str] | None = None
+    for raw in objects:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        missing = [key for key in _PACKET_KEYS if key not in value]
+        if best is None or len(missing) < len(best):
+            best = missing
+    return best or []
 
 
 def run_turn_with_retry(run: Callable[[str], object], message: str, *, json_retry: bool) -> object:
@@ -203,7 +302,9 @@ def _run_with_runtime(
             f"changelog_path: {changelog}",
             f"bug_log_path: {bugs}",
             "",
-            "Read both files, compile the release packet, and return that JSON.",
+            "Read both files, compile the release packet, and return that JSON object.",
+            "Include ship_recommendation and recommendation_reason.",
+            "Do not wrap the JSON in markdown fences or prefix it with a name.",
         ]
     )
     with Agent(
@@ -217,8 +318,14 @@ def _run_with_runtime(
         def _draft_turn(text: str):
             result = draft_agent.run(text, timeout_seconds=settings.timeout_seconds)
             # Validate here, not via Agent(output_type=...), so a fenced reply
-            # still yields session_id and thread_id when the object is valid.
-            return result, parse_release_packet(result.text)
+            # still yields session_id and thread_id. The bytes shown at approval
+            # come from the changelog and playtest log when the reply drifts.
+            packet = packet_from_model_reply(
+                result.text,
+                changelog_text=changelog.read_text(encoding="utf-8"),
+                bug_log_text=bugs.read_text(encoding="utf-8"),
+            )
+            return result, packet
 
         draft, packet = run_turn_with_retry(
             _draft_turn,
