@@ -6,6 +6,10 @@ does understand ``tool:<name> {json}`` directives. For a credential-free run
 this module plans the next tool call and patches ``EchoProvider.complete``
 only while a release turn is in flight. Internal SDK phases that do not offer
 the release tools still hit the original echo adapter.
+
+Hosted providers do not use this planner. Their entry tool calls are repaired
+in ``release_agent.task_update`` so a missing or malformed ``task_update``
+does not reject the turn before the tool runs.
 """
 
 from __future__ import annotations
